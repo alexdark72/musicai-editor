@@ -1,0 +1,236 @@
+version: '3.8'
+
+services:
+  # Frontend Development Server
+  frontend-dev:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_WS_URL=ws://localhost:8000
+      - REACT_APP_MAX_FILE_SIZE=104857600
+      - CHOKIDAR_USEPOLLING=true
+    networks:
+      - musicai-dev
+    depends_on:
+      - backend-dev
+    restart: unless-stopped
+
+  # Backend Development Server
+  backend-dev:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8000:8000"
+      - "5678:5678"  # Debug port
+    volumes:
+      - ./backend:/app
+      - ./temp_files:/app/temp_files
+      - ./models:/app/models
+    environment:
+      - REDIS_URL=redis://redis-dev:6379
+      - TEMP_DIR=/app/temp_files
+      - MODEL_CACHE_DIR=/app/models
+      - CUDA_VISIBLE_DEVICES=0
+      - MAX_FILE_SIZE=104857600
+      - SESSION_TIMEOUT=86400
+      - DEBUG=true
+      - RELOAD=true
+      - LOG_LEVEL=debug
+    networks:
+      - musicai-dev
+    depends_on:
+      - redis-dev
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # AI Worker Development
+  worker-dev:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    command: python -m app.worker
+    volumes:
+      - ./backend:/app
+      - ./temp_files:/app/temp_files
+      - ./models:/app/models
+    environment:
+      - REDIS_URL=redis://redis-dev:6379
+      - TEMP_DIR=/app/temp_files
+      - MODEL_CACHE_DIR=/app/models
+      - CUDA_VISIBLE_DEVICES=0
+      - DEBUG=true
+      - LOG_LEVEL=debug
+    networks:
+      - musicai-dev
+    depends_on:
+      - redis-dev
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # Redis for Development
+  redis-dev:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
+    networks:
+      - musicai-dev
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+
+  # Database for Development (Optional)
+  postgres-dev:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=musicai_dev
+      - POSTGRES_USER=musicai
+      - POSTGRES_PASSWORD=dev_password
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+      - ./backend/sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - musicai-dev
+    restart: unless-stopped
+    profiles:
+      - database
+
+  # Mailhog for Email Testing
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+    networks:
+      - musicai-dev
+    restart: unless-stopped
+    profiles:
+      - email
+
+  # Jupyter Notebook for AI Development
+  jupyter:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    command: jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token=''
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./backend:/app
+      - ./notebooks:/app/notebooks
+      - ./temp_files:/app/temp_files
+      - ./models:/app/models
+    environment:
+      - REDIS_URL=redis://redis-dev:6379
+      - TEMP_DIR=/app/temp_files
+      - MODEL_CACHE_DIR=/app/models
+      - CUDA_VISIBLE_DEVICES=0
+    networks:
+      - musicai-dev
+    depends_on:
+      - redis-dev
+    restart: unless-stopped
+    profiles:
+      - jupyter
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # MinIO for S3-compatible storage (Development)
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    volumes:
+      - minio_dev_data:/data
+    networks:
+      - musicai-dev
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    profiles:
+      - storage
+
+  # Prometheus for Metrics (Development)
+  prometheus-dev:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus-dev.yml:/etc/prometheus/prometheus.yml
+      - prometheus_dev_data:/prometheus
+    networks:
+      - musicai-dev
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+
+  # Grafana for Visualization (Development)
+  grafana-dev:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_dev_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - musicai-dev
+    depends_on:
+      - prometheus-dev
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+volumes:
+  redis_dev_data:
+  postgres_dev_data:
+  minio_dev_data:
+  prometheus_dev_data:
+  grafana_dev_data:
+
+networks:
+  musicai-dev:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

@@ -1,0 +1,86 @@
+# Prometheus configuration for MusicAI Editor Development
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: 'development'
+    project: 'musicai-editor'
+
+rule_files:
+  - "alert_rules.yml"
+
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+  # FastAPI Backend
+  - job_name: 'musicai-backend'
+    static_configs:
+      - targets: ['backend-dev:8000']
+    scrape_interval: 10s
+    metrics_path: /metrics
+    scrape_timeout: 5s
+    honor_labels: true
+    params:
+      format: ['prometheus']
+
+  # Redis
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-dev:6379']
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+  # Node Exporter (if available)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 30s
+    honor_labels: true
+
+  # GPU Metrics (if NVIDIA GPU available)
+  - job_name: 'nvidia-gpu'
+    static_configs:
+      - targets: ['nvidia-gpu-exporter:9445']
+    scrape_interval: 10s
+    honor_labels: true
+
+  # Custom Application Metrics
+  - job_name: 'musicai-custom'
+    static_configs:
+      - targets: ['backend-dev:8000']
+    scrape_interval: 15s
+    metrics_path: /api/metrics
+    honor_labels: true
+
+  # Worker Metrics
+  - job_name: 'musicai-worker'
+    static_configs:
+      - targets: ['worker-dev:8001']
+    scrape_interval: 15s
+    metrics_path: /metrics
+    honor_labels: true
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+# Storage configuration
+storage:
+  tsdb:
+    path: /prometheus
+    retention.time: 7d
+    retention.size: 1GB
+
+# Remote write (optional, for production)
+# remote_write:
+#   - url: "https://prometheus-remote-write-endpoint"
+#     basic_auth:
+#       username: "username"
+#       password: "password"

@@ -1,0 +1,66 @@
+# Dockerfile per AI Worker (separato per scalabilità)
+FROM nvidia/cuda:11.8-devel-ubuntu22.04
+
+# Evita prompt interattivi
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Installa dipendenze sistema
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3.10-dev \
+    python3-pip \
+    ffmpeg \
+    libsndfile1 \
+    libsox-fmt-all \
+    sox \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Crea symlink per python
+RUN ln -s /usr/bin/python3.10 /usr/bin/python
+
+# Aggiorna pip
+RUN python -m pip install --upgrade pip setuptools wheel
+
+# Installa dipendenze Python
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download modelli AI
+RUN python -c "from demucs.pretrained import get_model; get_model('htdemucs')"
+RUN python -c "from demucs.pretrained import get_model; get_model('mdx_extra')"
+
+# Crea utente non-root
+RUN useradd --create-home --shell /bin/bash aiworker
+USER aiworker
+WORKDIR /app
+
+# Copia codice worker
+COPY --chown=aiworker:aiworker worker.py .
+COPY --chown=aiworker:aiworker models/ ./models/
+COPY --chown=aiworker:aiworker utils/ ./utils/
+
+# Crea directory necessarie
+RUN mkdir -p /app/temp_files /app/models /app/logs
+
+# Variabili ambiente per ottimizzazioni GPU
+ENV PYTHONPATH=/app
+ENV CUDA_VISIBLE_DEVICES=0
+ENV TORCH_HOME=/app/models
+ENV HF_HOME=/app/models
+ENV OMP_NUM_THREADS=4
+ENV CUDA_LAUNCH_BLOCKING=0
+ENV TORCH_CUDNN_V8_API_ENABLED=1
+
+# Ottimizzazioni memoria GPU
+ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+
+# Health check per worker
+HEALTHCHECK --interval=60s --timeout=30s --start-period=10s --retries=3 \
+    CMD python -c "import torch; print('GPU available:', torch.cuda.is_available())" || exit 1
+
+# Comando di avvio worker
+CMD ["python", "worker.py"]
